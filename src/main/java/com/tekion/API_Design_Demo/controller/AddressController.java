@@ -1,149 +1,153 @@
 package com.tekion.API_Design_Demo.controller;
 
 import com.tekion.API_Design_Demo.dto.AddressDTO;
+import com.tekion.API_Design_Demo.dto.CustomerDTO;
+import com.tekion.API_Design_Demo.dto.request.CreateAddressRequest;
+import com.tekion.API_Design_Demo.dto.response.ApiResponse;
+import com.tekion.API_Design_Demo.service.DataStore;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
-import io.swagger.v3.oas.annotations.media.Content;
-import io.swagger.v3.oas.annotations.media.Schema;
-import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
-import java.util.ArrayList;
+import java.time.LocalDateTime;
 import java.util.List;
+import java.util.UUID;
+import java.util.stream.Collectors;
 
 @RestController
-@RequestMapping("/api/addresses")
-@Tag(
-        name = "Address",
-        description = "APIs for managing customer postal addresses, including retrieval, creation, update and deletion. " +
-                "This demo controller does not persist data, but documents the intended application for the Address service."
-)
+@RequestMapping("/api/v1/addresses")
+@Tag(name = "Address", description = "APIs for managing customer postal addresses")
 public class AddressController {
 
-    @Operation(
-            summary = "List all addresses",
-            description = "Returns the collection of all addresses known to the system. In this demo implementation, " +
-                    "an empty list is always returned and no data is stored."
-    )
-    @ApiResponse(
-            responseCode = "200",
-            description = "List of addresses successfully retrieved (may be empty)."
-    )
-    @GetMapping
-    public ResponseEntity<List<AddressDTO>> getAllAddresses() {
-        return ResponseEntity.ok(new ArrayList<>());
+    private final DataStore dataStore;
+
+    public AddressController(DataStore dataStore) {
+        this.dataStore = dataStore;
     }
 
-    @Operation(
-            summary = "Get a single address",
-            description = "Retrieves the address associated with the given address identifier. " +
-                    "In a real implementation this would query the Address service or database."
-    )
+    @Operation(summary = "List all addresses", description = "Returns the collection of all addresses with optional filtering")
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "200", description = "List of addresses successfully retrieved")
+    @GetMapping
+    public ResponseEntity<ApiResponse<List<AddressDTO>>> getAllAddresses(
+            @Parameter(description = "Filter by customer ID") @RequestParam(required = false) String customerId,
+            @Parameter(description = "Filter by city") @RequestParam(required = false) String city,
+            @Parameter(description = "Filter by state") @RequestParam(required = false) String state) {
+
+        List<AddressDTO> addresses = dataStore.getAddresses().values().stream()
+                .filter(a -> customerId == null || customerId.equals(a.getCustomerId()))
+                .filter(a -> city == null || city.equalsIgnoreCase(a.getCity()))
+                .filter(a -> state == null || state.equalsIgnoreCase(a.getState()))
+                .collect(Collectors.toList());
+
+        return ResponseEntity.ok(ApiResponse.success(addresses));
+    }
+
+    @Operation(summary = "Get a single address", description = "Retrieves the address by its ID")
     @ApiResponses(value = {
-            @ApiResponse(
-                    responseCode = "200",
-                    description = "Address with the specified identifier was found and returned.",
-                    content = @Content(schema = @Schema(implementation = AddressDTO.class))),
-            @ApiResponse(
-                    responseCode = "404",
-                    description = "No address exists for the supplied identifier.",
-                    content = @Content)
+            @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "200", description = "Address found"),
+            @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "404", description = "Address not found")
     })
     @GetMapping("/{addressId}")
-    public ResponseEntity<AddressDTO> getAddressById(
-            @Parameter(
-                    description = "Technical identifier of the address resource (for example `addr-001`).",
-                    required = true
-            )
+    public ResponseEntity<?> getAddressById(
+            @Parameter(description = "Address ID", required = true)
             @PathVariable String addressId) {
-        AddressDTO address = new AddressDTO();
-        address.setAddressId(addressId);
-        return ResponseEntity.ok(address);
+        AddressDTO address = dataStore.getAddress(addressId);
+        if (address == null) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body(ApiResponse.error("NOT_FOUND", "Address not found with id: " + addressId));
+        }
+        return ResponseEntity.ok(ApiResponse.success(address));
     }
 
-    @Operation(
-            summary = "Create a new address",
-            description = "Registers a new postal address for a customer. The created representation is returned in the response."
-    )
+    @Operation(summary = "Create a new address",
+            description = "Registers a new postal address for the authenticated customer. Customer ID is obtained from the X-Customer-Id header (simulating authentication context).")
     @ApiResponses(value = {
-            @ApiResponse(
-                    responseCode = "201",
-                    description = "Address was successfully created.",
-                    content = @Content(schema = @Schema(implementation = AddressDTO.class))),
-            @ApiResponse(
-                    responseCode = "400",
-                    description = "The request body is missing required fields or contains invalid values.",
-                    content = @Content)
+            @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "201", description = "Address created"),
+            @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "400", description = "Invalid request data or missing X-Customer-Id header"),
+            @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "404", description = "Customer not found")
     })
     @PostMapping
-    public ResponseEntity<AddressDTO> createAddress(
-            @Parameter(
-                    description = "Address payload containing customer, street, city, state, postal code and country.",
-                    required = true
-            )
-            @RequestBody AddressDTO addressDTO) {
-        return ResponseEntity.status(HttpStatus.CREATED).body(addressDTO);
+    public ResponseEntity<?> createAddress(
+            @Parameter(description = "Customer ID (simulates authenticated user context)", required = true, example = "cust-12345678")
+            @RequestHeader("X-Customer-Id") String customerId,
+            @Valid @RequestBody CreateAddressRequest request) {
+        // Validate customer exists (customerId comes from auth header, not request body)
+        CustomerDTO customer = dataStore.getCustomer(customerId);
+        if (customer == null) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body(ApiResponse.error("NOT_FOUND", "Customer not found with id: " + customerId));
+        }
+
+        String addressId = "addr-" + UUID.randomUUID().toString().substring(0, 8);
+
+        AddressDTO address = AddressDTO.builder()
+                .addressId(addressId)
+                .customerId(customer.getCustomerId())
+                .street(request.getStreet())
+                .city(request.getCity())
+                .state(request.getState())
+                .zipCode(request.getZipCode())
+                .country(request.getCountry())
+                .createdAt(LocalDateTime.now())
+                .build();
+
+        dataStore.saveAddress(address);
+        return ResponseEntity.status(HttpStatus.CREATED).body(ApiResponse.success(address));
     }
 
-    @Operation(
-            summary = "Update an existing address",
-            description = "Replaces the details of an existing address with the values provided in the request body."
-    )
+    @Operation(summary = "Update an existing address", description = "Updates address details")
     @ApiResponses(value = {
-            @ApiResponse(
-                    responseCode = "200",
-                    description = "Address was successfully updated.",
-                    content = @Content(schema = @Schema(implementation = AddressDTO.class))),
-            @ApiResponse(
-                    responseCode = "404",
-                    description = "No address exists for the supplied identifier.",
-                    content = @Content),
-            @ApiResponse(
-                    responseCode = "400",
-                    description = "The request body is missing required fields or contains invalid values.",
-                    content = @Content)
+            @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "200", description = "Address updated"),
+            @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "404", description = "Address not found")
     })
     @PutMapping("/{addressId}")
-    public ResponseEntity<AddressDTO> updateAddress(
-            @Parameter(
-                    description = "Identifier of the address that should be updated.",
-                    required = true
-            )
+    public ResponseEntity<?> updateAddress(
+            @Parameter(description = "Address ID", required = true)
             @PathVariable String addressId,
-            @Parameter(
-                    description = "New values for the address fields. Typically mirrors the AddressDTO returned from read operations.",
-                    required = true
-            )
-            @RequestBody AddressDTO addressDTO) {
-        addressDTO.setAddressId(addressId);
-        return ResponseEntity.ok(addressDTO);
+            @Valid @RequestBody CreateAddressRequest request) {
+
+        AddressDTO existing = dataStore.getAddress(addressId);
+        if (existing == null) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body(ApiResponse.error("NOT_FOUND", "Address not found with id: " + addressId));
+        }
+
+        AddressDTO updated = AddressDTO.builder()
+                .addressId(addressId)
+                .customerId(existing.getCustomerId())
+                .street(request.getStreet())
+                .city(request.getCity())
+                .state(request.getState())
+                .zipCode(request.getZipCode())
+                .country(request.getCountry())
+                .createdAt(existing.getCreatedAt())
+                .build();
+
+        dataStore.saveAddress(updated);
+        return ResponseEntity.ok(ApiResponse.success(updated));
     }
 
-    @Operation(
-            summary = "Delete an address",
-            description = "Permanently removes the address associated with the given identifier from the system."
-    )
+    @Operation(summary = "Delete an address", description = "Permanently removes the address")
     @ApiResponses(value = {
-            @ApiResponse(
-                    responseCode = "204",
-                    description = "Address was successfully deleted. No response body is returned."),
-            @ApiResponse(
-                    responseCode = "404",
-                    description = "No address exists for the supplied identifier.",
-                    content = @Content)
+            @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "204", description = "Address deleted"),
+            @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "404", description = "Address not found")
     })
     @DeleteMapping("/{addressId}")
-    public ResponseEntity<Void> deleteAddress(
-            @Parameter(
-                    description = "Identifier of the address to delete.",
-                    required = true
-            )
+    public ResponseEntity<?> deleteAddress(
+            @Parameter(description = "Address ID", required = true)
             @PathVariable String addressId) {
+        AddressDTO address = dataStore.getAddress(addressId);
+        if (address == null) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body(ApiResponse.error("NOT_FOUND", "Address not found with id: " + addressId));
+        }
+        dataStore.deleteAddress(addressId);
         return ResponseEntity.noContent().build();
     }
-}
 
+}

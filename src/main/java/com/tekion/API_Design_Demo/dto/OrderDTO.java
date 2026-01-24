@@ -1,66 +1,51 @@
 package com.tekion.API_Design_Demo.dto;
 
 import io.swagger.v3.oas.annotations.media.Schema;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
-import java.util.UUID;
+import java.util.List;
 
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
 @Schema(description = "Data Transfer Object representing an Order")
 public class OrderDTO {
 
-    @Schema(description = "Unique identifier of the order", example = "550e8400-e29b-41d4-a716-446655440000", accessMode = Schema.AccessMode.READ_ONLY)
-    private UUID orderId;
+    @Schema(description = "Unique identifier of the order (auto-generated)", example = "ord-001", accessMode = Schema.AccessMode.READ_ONLY)
+    private String orderId;
 
-    @Schema(description = "Unique identifier of the customer who placed the order", example = "123e4567-e89b-12d3-a456-426614174000", requiredMode = Schema.RequiredMode.REQUIRED)
-    private UUID customerId;
+    @Schema(description = "Customer ID who placed the order", example = "cust-001", accessMode = Schema.AccessMode.READ_ONLY)
+    private String customerId;
 
-    @Schema(description = "Date and time when the order was placed", example = "2024-01-15T10:30:00")
+    @Schema(description = "Customer name (populated from customer)", example = "John Doe", accessMode = Schema.AccessMode.READ_ONLY)
+    private String customerName;
+
+    @Schema(description = "List of items in the order", accessMode = Schema.AccessMode.READ_ONLY)
+    private List<OrderItemDTO> items;
+
+    @Schema(description = "Date and time when the order was placed", example = "2024-01-15T10:30:00", accessMode = Schema.AccessMode.READ_ONLY)
     private LocalDateTime orderDate;
 
-    @Schema(description = "Current status of the order", example = "PENDING", allowableValues = {"PENDING", "CONFIRMED", "SHIPPED", "DELIVERED", "CANCELLED"})
+    @Schema(description = "Current status of the order", example = "PENDING",
+            allowableValues = {"PENDING", "CONFIRMED", "PROCESSING", "SHIPPED", "DELIVERED", "CANCELLED"})
     private String status;
 
-    @Schema(description = "Total amount of the order", example = "299.99", minimum = "0")
+    @Schema(description = "Total amount of the order (calculated from items)", example = "299.99", accessMode = Schema.AccessMode.READ_ONLY)
     private BigDecimal totalAmount;
 
-    public UUID getOrderId() {
-        return orderId;
-    }
+    @Schema(description = "Shipping address ID", example = "addr-001", accessMode = Schema.AccessMode.READ_ONLY)
+    private String shippingAddressId;
 
-    public void setOrderId(UUID orderId) {
-        this.orderId = orderId;
-    }
+    @Schema(description = "Timestamp when order was created", example = "2025-01-20T10:30:00", accessMode = Schema.AccessMode.READ_ONLY)
+    private LocalDateTime createdAt;
 
-    public UUID getCustomerId() {
-        return customerId;
-    }
-
-    public void setCustomerId(UUID customerId) {
-        this.customerId = customerId;
-    }
-
-    public LocalDateTime getOrderDate() {
-        return orderDate;
-    }
-
-    public void setOrderDate(LocalDateTime orderDate) {
-        this.orderDate = orderDate;
-    }
-
-    public String getStatus() {
-        return status;
-    }
-
-    public void setStatus(String status) {
-        this.status = status;
-    }
-
-    public BigDecimal getTotalAmount() {
-        return totalAmount;
-    }
-
-    public void setTotalAmount(BigDecimal totalAmount) {
-        this.totalAmount = totalAmount;
-    }
+    @Schema(description = "Timestamp when order was last updated", example = "2025-01-20T14:45:00", accessMode = Schema.AccessMode.READ_ONLY)
+    private LocalDateTime updatedAt;
 }
 

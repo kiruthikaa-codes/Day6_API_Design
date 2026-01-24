@@ -1,31 +1,45 @@
 package com.tekion.API_Design_Demo.controller;
 
 import com.tekion.API_Design_Demo.dto.InventoryDTO;
+import com.tekion.API_Design_Demo.dto.ProductDTO;
 import com.tekion.API_Design_Demo.dto.request.AdjustQuantityRequest;
 import com.tekion.API_Design_Demo.dto.request.CreateInventoryRequest;
 import com.tekion.API_Design_Demo.dto.request.RestockRequest;
 import com.tekion.API_Design_Demo.dto.request.UpdateInventoryRequest;
 import com.tekion.API_Design_Demo.dto.response.ApiResponse;
 import com.tekion.API_Design_Demo.dto.response.ErrorResponse;
+import com.tekion.API_Design_Demo.enums.InventoryStatus;
+import com.tekion.API_Design_Demo.service.DataStore;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.media.Content;
 import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.validation.Valid;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.time.LocalDateTime;
 import java.util.List;
+import java.util.UUID;
+import java.util.stream.Collectors;
 
 /**
  * REST Controller for Inventory management operations.
  * Provides endpoints for CRUD operations and inventory-specific actions.
  */
 @RestController
-@RequestMapping("/api/inventory")
+@RequestMapping("/api/v1/inventory")
 @Tag(name = "Inventory", description = "Inventory management API for tracking stock levels, restocking, and quantity adjustments")
 public class InventoryController {
+
+    private final DataStore dataStore;
+
+    public InventoryController(DataStore dataStore) {
+        this.dataStore = dataStore;
+    }
 
     /**
      * List all inventory records with optional filtering and pagination.
@@ -33,36 +47,23 @@ public class InventoryController {
     @GetMapping
     @Operation(
         summary = "List all inventory",
-        description = "Retrieves a paginated list of all inventory records. Supports filtering by warehouse ID and inventory status. " +
-                      "Use pagination parameters (page, size) to control the result set. Default page size is 20 records."
+        description = "Retrieves a list of all inventory records. Supports filtering by warehouse ID, product ID, and inventory status."
     )
     @ApiResponses(value = {
-        @io.swagger.v3.oas.annotations.responses.ApiResponse(
-            responseCode = "200",
-            description = "Successfully retrieved inventory list. Returns an empty list if no inventory records match the criteria.",
-            content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiResponse.class))
-        ),
-        @io.swagger.v3.oas.annotations.responses.ApiResponse(
-            responseCode = "400",
-            description = "Bad Request - Invalid request parameters. Possible causes:\n" +
-                          "• 'page' parameter is negative (must be >= 0)\n" +
-                          "• 'size' parameter is less than 1 or greater than 100\n" +
-                          "• 'status' parameter contains an invalid inventory status value (valid values: IN_STOCK, OUT_OF_STOCK, LOW_STOCK, RESERVED, BACKORDERED, DISCONTINUED, IN_TRANSIT)",
-            content = @Content(mediaType = "application/json", schema = @Schema(implementation = ErrorResponse.class))
-        )
+        @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "200", description = "Successfully retrieved inventory list")
     })
     public ResponseEntity<ApiResponse<List<InventoryDTO>>> listInventory(
-            @Parameter(description = "Page number (0-based)", example = "0")
-            @RequestParam(defaultValue = "0") int page,
-            @Parameter(description = "Page size", example = "20")
-            @RequestParam(defaultValue = "20") int size,
-            @Parameter(description = "Filter by warehouse ID", example = "wh-987fcdeb-51a2-3bc4-d567-890123456789")
-            @RequestParam(required = false) String warehouseId,
-            @Parameter(description = "Filter by inventory status", example = "IN_STOCK")
-            @RequestParam(required = false) String status
+            @Parameter(description = "Filter by warehouse ID") @RequestParam(required = false) String warehouseId,
+            @Parameter(description = "Filter by product ID") @RequestParam(required = false) String productId,
+            @Parameter(description = "Filter by inventory status") @RequestParam(required = false) String status
     ) {
-        // TODO: Implement service call
-        return ResponseEntity.ok(ApiResponse.success(List.of()));
+        List<InventoryDTO> inventoryList = dataStore.getInventory().values().stream()
+                .filter(inv -> warehouseId == null || warehouseId.equals(inv.getWarehouseId()))
+                .filter(inv -> productId == null || productId.equals(inv.getProductId()))
+                .filter(inv -> status == null || (inv.getStatus() != null && status.equalsIgnoreCase(inv.getStatus().name())))
+                .collect(Collectors.toList());
+
+        return ResponseEntity.ok(ApiResponse.success(inventoryList));
     }
 
     /**
@@ -89,12 +90,110 @@ public class InventoryController {
             content = @Content(mediaType = "application/json", schema = @Schema(implementation = ErrorResponse.class))
         )
     })
-    public ResponseEntity<ApiResponse<InventoryDTO>> getInventory(
+    public ResponseEntity<?> getInventory(
             @Parameter(description = "Inventory record ID", required = true, example = "inv-123e4567-e89b-12d3-a456-426614174000")
             @PathVariable String inventoryId
     ) {
-        // TODO: Implement service call
-        return ResponseEntity.ok(ApiResponse.success(null));
+        InventoryDTO inventory = dataStore.getInventoryItem(inventoryId);
+        if (inventory == null) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body(ApiResponse.error("NOT_FOUND", "Inventory not found with id: " + inventoryId));
+        }
+        return ResponseEntity.ok(ApiResponse.success(inventory));
+    }
+
+    /**
+     * Get inventory for a specific product.
+     */
+    @GetMapping("/product/{productId}")
+    @Operation(
+        summary = "Get inventory for product",
+        description = "Retrieves all inventory records for a specific product across all warehouses. " +
+                      "Useful for checking total stock availability across multiple locations. " +
+                      "Returns a list of inventory records, one for each warehouse where the product is stocked."
+    )
+    @ApiResponses(value = {
+        @io.swagger.v3.oas.annotations.responses.ApiResponse(
+            responseCode = "200",
+            description = "Successfully retrieved inventory for product. Returns a list of inventory records across all warehouses. " +
+                          "An empty list indicates the product has no inventory records (not stocked in any warehouse).",
+            content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiResponse.class))
+        ),
+        @io.swagger.v3.oas.annotations.responses.ApiResponse(
+            responseCode = "404",
+            description = "Not Found - Product does not exist. Possible causes:\n" +
+                          "• The provided productId does not match any existing product in the system\n" +
+                          "• The product may have been deleted or deactivated\n" +
+                          "• Verify the productId format: prod-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx\n" +
+                          "Note: If the product exists but has no inventory, a 200 response with an empty list is returned instead",
+            content = @Content(mediaType = "application/json", schema = @Schema(implementation = ErrorResponse.class))
+        )
+    })
+    public ResponseEntity<?> getInventoryByProduct(
+            @Parameter(description = "Product ID", required = true, example = "prod-123e4567-e89b-12d3-a456-426614174000")
+            @PathVariable String productId
+    ) {
+        // Validate product exists
+        ProductDTO product = dataStore.getProduct(productId);
+        if (product == null) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body(ApiResponse.error("NOT_FOUND", "Product not found with id: " + productId));
+        }
+
+        List<InventoryDTO> inventoryList = dataStore.getInventory().values().stream()
+                .filter(inv -> productId.equals(inv.getProductId()))
+                .collect(Collectors.toList());
+
+        return ResponseEntity.ok(ApiResponse.success(inventoryList));
+    }
+
+    /**
+     * Get all low stock items.
+     */
+    @GetMapping("/low-stock")
+    @Operation(
+        summary = "Get low stock items",
+        description = "Retrieves all inventory records where the available quantity is at or below the configured low stock threshold. " +
+                      "This endpoint is useful for generating reorder alerts and identifying items that need restocking. " +
+                      "Results can be filtered by warehouse and are paginated for large datasets."
+    )
+    @ApiResponses(value = {
+        @io.swagger.v3.oas.annotations.responses.ApiResponse(
+            responseCode = "200",
+            description = "Successfully retrieved low stock items. Returns a paginated list of inventory records that are at or below their low stock threshold. " +
+                          "An empty list indicates all inventory items are adequately stocked. " +
+                          "Each record includes the current quantity, threshold value, and warehouse location for easy reordering.",
+            content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiResponse.class))
+        ),
+        @io.swagger.v3.oas.annotations.responses.ApiResponse(
+            responseCode = "400",
+            description = "Bad Request - Invalid request parameters. Possible causes:\n" +
+                          "• 'page' parameter is negative (must be >= 0)\n" +
+                          "• 'size' parameter is less than 1 or greater than 100\n" +
+                          "• Invalid 'warehouseId' format",
+            content = @Content(mediaType = "application/json", schema = @Schema(implementation = ErrorResponse.class))
+        )
+    })
+    public ResponseEntity<ApiResponse<List<InventoryDTO>>> getLowStockItems(
+            @Parameter(description = "Filter by warehouse ID", example = "wh-987fcdeb-51a2-3bc4-d567-890123456789")
+            @RequestParam(required = false) String warehouseId,
+            @Parameter(description = "Page number (0-based)", example = "0")
+            @RequestParam(defaultValue = "0") int page,
+            @Parameter(description = "Page size", example = "20")
+            @RequestParam(defaultValue = "20") int size
+    ) {
+        List<InventoryDTO> lowStockItems = dataStore.getInventory().values().stream()
+                .filter(inv -> warehouseId == null || warehouseId.equals(inv.getWarehouseId()))
+                .filter(inv -> {
+                    int available = inv.getAvailableQuantity() != null ? inv.getAvailableQuantity() : 0;
+                    int threshold = inv.getLowStockThreshold() != null ? inv.getLowStockThreshold() : 10;
+                    return available <= threshold;
+                })
+                .skip((long) page * size)
+                .limit(size)
+                .collect(Collectors.toList());
+
+        return ResponseEntity.ok(ApiResponse.success(lowStockItems));
     }
 
     /**
@@ -135,16 +234,57 @@ public class InventoryController {
             content = @Content(mediaType = "application/json", schema = @Schema(implementation = ErrorResponse.class))
         )
     })
-    public ResponseEntity<ApiResponse<InventoryDTO>> createInventory(
+    public ResponseEntity<?> createInventory(
             @io.swagger.v3.oas.annotations.parameters.RequestBody(
                 description = "Inventory creation request",
                 required = true,
                 content = @Content(schema = @Schema(implementation = CreateInventoryRequest.class))
             )
-            @RequestBody CreateInventoryRequest request
+            @Valid @RequestBody CreateInventoryRequest request
     ) {
-        // TODO: Implement service call
-        return ResponseEntity.status(201).body(ApiResponse.success(null, "Inventory record created successfully"));
+        // Validate product exists
+        ProductDTO product = dataStore.getProduct(request.getProductId());
+        if (product == null) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body(ApiResponse.error("NOT_FOUND", "Product not found with id: " + request.getProductId()));
+        }
+
+        String inventoryId = "inv-" + UUID.randomUUID().toString().substring(0, 8);
+        LocalDateTime now = LocalDateTime.now();
+
+        int quantity = request.getQuantity() != null ? request.getQuantity() : 0;
+        int lowStockThreshold = request.getLowStockThreshold() != null ? request.getLowStockThreshold() : 10;
+
+        // Determine status based on quantity
+        InventoryStatus status;
+        if (quantity == 0) {
+            status = InventoryStatus.OUT_OF_STOCK;
+        } else if (quantity <= lowStockThreshold) {
+            status = InventoryStatus.LOW_STOCK;
+        } else {
+            status = InventoryStatus.IN_STOCK;
+        }
+
+        InventoryDTO inventory = InventoryDTO.builder()
+                .id(inventoryId)
+                .productId(request.getProductId())
+                .warehouseId(request.getWarehouseId())
+                .quantity(quantity)
+                .reservedQuantity(0)
+                .availableQuantity(quantity)
+                .lowStockThreshold(lowStockThreshold)
+                .maxCapacity(request.getMaxCapacity())
+                .status(status)
+                .sku(request.getSku())
+                .batchNumber(request.getBatchNumber())
+                .unit(request.getUnit())
+                .unitCost(request.getUnitCost())
+                .createdAt(now)
+                .updatedAt(now)
+                .build();
+
+        dataStore.saveInventory(inventory);
+        return ResponseEntity.status(HttpStatus.CREATED).body(ApiResponse.success(inventory, "Inventory record created successfully"));
     }
 
     /**
@@ -183,7 +323,7 @@ public class InventoryController {
             content = @Content(mediaType = "application/json", schema = @Schema(implementation = ErrorResponse.class))
         )
     })
-    public ResponseEntity<ApiResponse<InventoryDTO>> updateInventory(
+    public ResponseEntity<?> updateInventory(
             @Parameter(description = "Inventory record ID", required = true, example = "inv-123e4567-e89b-12d3-a456-426614174000")
             @PathVariable String inventoryId,
             @io.swagger.v3.oas.annotations.parameters.RequestBody(
@@ -191,10 +331,53 @@ public class InventoryController {
                 required = true,
                 content = @Content(schema = @Schema(implementation = UpdateInventoryRequest.class))
             )
-            @RequestBody UpdateInventoryRequest request
+            @Valid @RequestBody UpdateInventoryRequest request
     ) {
-        // TODO: Implement service call
-        return ResponseEntity.ok(ApiResponse.success(null, "Inventory updated successfully"));
+        InventoryDTO existing = dataStore.getInventoryItem(inventoryId);
+        if (existing == null) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body(ApiResponse.error("NOT_FOUND", "Inventory not found with id: " + inventoryId));
+        }
+
+        // Update only non-null fields from request
+        int quantity = request.getQuantity() != null ? request.getQuantity() : existing.getQuantity();
+        int reservedQuantity = request.getReservedQuantity() != null ? request.getReservedQuantity() : existing.getReservedQuantity();
+        int availableQuantity = quantity - reservedQuantity;
+        int lowStockThreshold = request.getLowStockThreshold() != null ? request.getLowStockThreshold() : existing.getLowStockThreshold();
+
+        // Determine status based on quantity if not explicitly set
+        InventoryStatus status = request.getStatus();
+        if (status == null) {
+            if (availableQuantity == 0) {
+                status = InventoryStatus.OUT_OF_STOCK;
+            } else if (availableQuantity <= lowStockThreshold) {
+                status = InventoryStatus.LOW_STOCK;
+            } else {
+                status = InventoryStatus.IN_STOCK;
+            }
+        }
+
+        InventoryDTO updated = InventoryDTO.builder()
+                .id(inventoryId)
+                .productId(existing.getProductId())
+                .warehouseId(request.getWarehouseId() != null ? request.getWarehouseId() : existing.getWarehouseId())
+                .quantity(quantity)
+                .reservedQuantity(reservedQuantity)
+                .availableQuantity(availableQuantity)
+                .lowStockThreshold(lowStockThreshold)
+                .maxCapacity(request.getMaxCapacity() != null ? request.getMaxCapacity() : existing.getMaxCapacity())
+                .status(status)
+                .sku(request.getSku() != null ? request.getSku() : existing.getSku())
+                .batchNumber(request.getBatchNumber() != null ? request.getBatchNumber() : existing.getBatchNumber())
+                .unit(request.getUnit() != null ? request.getUnit() : existing.getUnit())
+                .unitCost(request.getUnitCost() != null ? request.getUnitCost() : existing.getUnitCost())
+                .createdAt(existing.getCreatedAt())
+                .updatedAt(LocalDateTime.now())
+                .lastRestockedAt(existing.getLastRestockedAt())
+                .build();
+
+        dataStore.saveInventory(updated);
+        return ResponseEntity.ok(ApiResponse.success(updated, "Inventory updated successfully"));
     }
 
     /**
@@ -233,7 +416,7 @@ public class InventoryController {
             content = @Content(mediaType = "application/json", schema = @Schema(implementation = ErrorResponse.class))
         )
     })
-    public ResponseEntity<ApiResponse<InventoryDTO>> adjustQuantity(
+    public ResponseEntity<?> adjustQuantity(
             @Parameter(description = "Inventory record ID", required = true, example = "inv-123e4567-e89b-12d3-a456-426614174000")
             @PathVariable String inventoryId,
             @io.swagger.v3.oas.annotations.parameters.RequestBody(
@@ -241,84 +424,63 @@ public class InventoryController {
                 required = true,
                 content = @Content(schema = @Schema(implementation = AdjustQuantityRequest.class))
             )
-            @RequestBody AdjustQuantityRequest request
+            @Valid @RequestBody AdjustQuantityRequest request
     ) {
-        // TODO: Implement service call
-        return ResponseEntity.ok(ApiResponse.success(null, "Quantity adjusted successfully"));
-    }
+        InventoryDTO existing = dataStore.getInventoryItem(inventoryId);
+        if (existing == null) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body(ApiResponse.error("NOT_FOUND", "Inventory not found with id: " + inventoryId));
+        }
 
-    /**
-     * Get inventory for a specific product.
-     */
-    @GetMapping("/product/{productId}")
-    @Operation(
-        summary = "Get inventory for product",
-        description = "Retrieves all inventory records for a specific product across all warehouses. " +
-                      "Useful for checking total stock availability across multiple locations. " +
-                      "Returns a list of inventory records, one for each warehouse where the product is stocked."
-    )
-    @ApiResponses(value = {
-        @io.swagger.v3.oas.annotations.responses.ApiResponse(
-            responseCode = "200",
-            description = "Successfully retrieved inventory for product. Returns a list of inventory records across all warehouses. " +
-                          "An empty list indicates the product has no inventory records (not stocked in any warehouse).",
-            content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiResponse.class))
-        ),
-        @io.swagger.v3.oas.annotations.responses.ApiResponse(
-            responseCode = "404",
-            description = "Not Found - Product does not exist. Possible causes:\n" +
-                          "• The provided productId does not match any existing product in the system\n" +
-                          "• The product may have been deleted or deactivated\n" +
-                          "• Verify the productId format: prod-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx\n" +
-                          "Note: If the product exists but has no inventory, a 200 response with an empty list is returned instead",
-            content = @Content(mediaType = "application/json", schema = @Schema(implementation = ErrorResponse.class))
-        )
-    })
-    public ResponseEntity<ApiResponse<List<InventoryDTO>>> getInventoryByProduct(
-            @Parameter(description = "Product ID", required = true, example = "prod-123e4567-e89b-12d3-a456-426614174000")
-            @PathVariable String productId
-    ) {
-        // TODO: Implement service call
-        return ResponseEntity.ok(ApiResponse.success(List.of()));
-    }
+        int adjustment = request.getAdjustment() != null ? request.getAdjustment() : 0;
+        int newQuantity = existing.getQuantity() + adjustment;
 
-    /**
-     * Get all low stock items.
-     */
-    @GetMapping("/low-stock")
-    @Operation(
-        summary = "Get low stock items",
-        description = "Retrieves all inventory records where the available quantity is at or below the configured low stock threshold. " +
-                      "This endpoint is useful for generating reorder alerts and identifying items that need restocking. " +
-                      "Results can be filtered by warehouse and are paginated for large datasets."
-    )
-    @ApiResponses(value = {
-        @io.swagger.v3.oas.annotations.responses.ApiResponse(
-            responseCode = "200",
-            description = "Successfully retrieved low stock items. Returns a paginated list of inventory records that are at or below their low stock threshold. " +
-                          "An empty list indicates all inventory items are adequately stocked. " +
-                          "Each record includes the current quantity, threshold value, and warehouse location for easy reordering.",
-            content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiResponse.class))
-        ),
-        @io.swagger.v3.oas.annotations.responses.ApiResponse(
-            responseCode = "400",
-            description = "Bad Request - Invalid request parameters. Possible causes:\n" +
-                          "• 'page' parameter is negative (must be >= 0)\n" +
-                          "• 'size' parameter is less than 1 or greater than 100\n" +
-                          "• Invalid 'warehouseId' format",
-            content = @Content(mediaType = "application/json", schema = @Schema(implementation = ErrorResponse.class))
-        )
-    })
-    public ResponseEntity<ApiResponse<List<InventoryDTO>>> getLowStockItems(
-            @Parameter(description = "Filter by warehouse ID", example = "wh-987fcdeb-51a2-3bc4-d567-890123456789")
-            @RequestParam(required = false) String warehouseId,
-            @Parameter(description = "Page number (0-based)", example = "0")
-            @RequestParam(defaultValue = "0") int page,
-            @Parameter(description = "Page size", example = "20")
-            @RequestParam(defaultValue = "20") int size
-    ) {
-        // TODO: Implement service call
-        return ResponseEntity.ok(ApiResponse.success(List.of()));
+        // Validate that new quantity is not negative
+        if (newQuantity < 0) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                    .body(ApiResponse.error("INVALID_ADJUSTMENT", "Adjustment would result in negative quantity. Current: " + existing.getQuantity() + ", Adjustment: " + adjustment));
+        }
+
+        // Check max capacity if set
+        if (existing.getMaxCapacity() != null && newQuantity > existing.getMaxCapacity()) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                    .body(ApiResponse.error("EXCEEDS_CAPACITY", "Adjustment would exceed max capacity: " + existing.getMaxCapacity()));
+        }
+
+        int availableQuantity = newQuantity - existing.getReservedQuantity();
+        int lowStockThreshold = existing.getLowStockThreshold() != null ? existing.getLowStockThreshold() : 10;
+
+        // Determine status based on new quantity
+        InventoryStatus status;
+        if (availableQuantity <= 0) {
+            status = InventoryStatus.OUT_OF_STOCK;
+        } else if (availableQuantity <= lowStockThreshold) {
+            status = InventoryStatus.LOW_STOCK;
+        } else {
+            status = InventoryStatus.IN_STOCK;
+        }
+
+        InventoryDTO updated = InventoryDTO.builder()
+                .id(inventoryId)
+                .productId(existing.getProductId())
+                .warehouseId(existing.getWarehouseId())
+                .quantity(newQuantity)
+                .reservedQuantity(existing.getReservedQuantity())
+                .availableQuantity(availableQuantity)
+                .lowStockThreshold(existing.getLowStockThreshold())
+                .maxCapacity(existing.getMaxCapacity())
+                .status(status)
+                .sku(existing.getSku())
+                .batchNumber(existing.getBatchNumber())
+                .unit(existing.getUnit())
+                .unitCost(existing.getUnitCost())
+                .createdAt(existing.getCreatedAt())
+                .updatedAt(LocalDateTime.now())
+                .lastRestockedAt(existing.getLastRestockedAt())
+                .build();
+
+        dataStore.saveInventory(updated);
+        return ResponseEntity.ok(ApiResponse.success(updated, "Quantity adjusted successfully"));
     }
 
     /**
@@ -362,7 +524,7 @@ public class InventoryController {
             content = @Content(mediaType = "application/json", schema = @Schema(implementation = ErrorResponse.class))
         )
     })
-    public ResponseEntity<ApiResponse<InventoryDTO>> restockItem(
+    public ResponseEntity<?> restockItem(
             @Parameter(description = "Inventory record ID", required = true, example = "inv-123e4567-e89b-12d3-a456-426614174000")
             @PathVariable String inventoryId,
             @io.swagger.v3.oas.annotations.parameters.RequestBody(
@@ -370,10 +532,59 @@ public class InventoryController {
                 required = true,
                 content = @Content(schema = @Schema(implementation = RestockRequest.class))
             )
-            @RequestBody RestockRequest request
+            @Valid @RequestBody RestockRequest request
     ) {
-        // TODO: Implement service call
-        return ResponseEntity.ok(ApiResponse.success(null, "Item restocked successfully"));
+        InventoryDTO existing = dataStore.getInventoryItem(inventoryId);
+        if (existing == null) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body(ApiResponse.error("NOT_FOUND", "Inventory not found with id: " + inventoryId));
+        }
+
+        int restockQuantity = request.getQuantity() != null ? request.getQuantity() : 0;
+        int newQuantity = existing.getQuantity() + restockQuantity;
+
+        // Check max capacity if set
+        if (existing.getMaxCapacity() != null && newQuantity > existing.getMaxCapacity()) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                    .body(ApiResponse.error("EXCEEDS_CAPACITY", "Restock would exceed max capacity: " + existing.getMaxCapacity()));
+        }
+
+        int availableQuantity = newQuantity - existing.getReservedQuantity();
+        int lowStockThreshold = existing.getLowStockThreshold() != null ? existing.getLowStockThreshold() : 10;
+
+        // Determine status based on new quantity
+        InventoryStatus status;
+        if (availableQuantity <= 0) {
+            status = InventoryStatus.OUT_OF_STOCK;
+        } else if (availableQuantity <= lowStockThreshold) {
+            status = InventoryStatus.LOW_STOCK;
+        } else {
+            status = InventoryStatus.IN_STOCK;
+        }
+
+        LocalDateTime now = LocalDateTime.now();
+
+        InventoryDTO updated = InventoryDTO.builder()
+                .id(inventoryId)
+                .productId(existing.getProductId())
+                .warehouseId(existing.getWarehouseId())
+                .quantity(newQuantity)
+                .reservedQuantity(existing.getReservedQuantity())
+                .availableQuantity(availableQuantity)
+                .lowStockThreshold(existing.getLowStockThreshold())
+                .maxCapacity(existing.getMaxCapacity())
+                .status(status)
+                .sku(existing.getSku())
+                .batchNumber(request.getBatchNumber() != null ? request.getBatchNumber() : existing.getBatchNumber())
+                .unit(existing.getUnit())
+                .unitCost(request.getUnitCost() != null ? request.getUnitCost() : existing.getUnitCost())
+                .createdAt(existing.getCreatedAt())
+                .updatedAt(now)
+                .lastRestockedAt(now)
+                .build();
+
+        dataStore.saveInventory(updated);
+        return ResponseEntity.ok(ApiResponse.success(updated, "Item restocked successfully"));
     }
 }
 
